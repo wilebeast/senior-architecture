@@ -23,4 +23,5 @@ func (s *NoopStore) PersistTrades(context.Context, []domain.Trade) error   { ret
 func (s *NoopStore) PersistAudit(context.Context, []domain.AuditEvent) error {
 	return nil
 }
-func (s *NoopStore) Close() error { return nil }
+func (s *NoopStore) PersistOutbox(context.Context, []domain.OutboxEvent) error { return nil }
+func (s *NoopStore) Close() error                                              { return nil }

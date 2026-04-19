@@ -1,3 +1,9 @@
+CREATE TABLE IF NOT EXISTS accounts (
+    id TEXT PRIMARY KEY,
+    version BIGINT NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
 CREATE TABLE IF NOT EXISTS account_balances (
     account_id TEXT NOT NULL,
     asset TEXT NOT NULL,
@@ -49,3 +55,16 @@ CREATE TABLE IF NOT EXISTS audit_events (
 
 CREATE INDEX IF NOT EXISTS idx_audit_events_created_at
     ON audit_events (created_at DESC);
+
+CREATE TABLE IF NOT EXISTS outbox_events (
+    id TEXT PRIMARY KEY,
+    aggregate_type TEXT NOT NULL,
+    aggregate_id TEXT NOT NULL,
+    topic TEXT NOT NULL,
+    payload JSONB NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL,
+    published_at TIMESTAMPTZ NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_outbox_events_published_at
+    ON outbox_events (published_at, created_at);

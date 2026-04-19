@@ -5,8 +5,10 @@ import (
 	"database/sql"
 	_ "embed"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
+	"time"
 
 	_ "github.com/lib/pq"
 
@@ -68,6 +70,11 @@ func (s *PostgresStore) PersistAccount(ctx context.Context, account *domain.Acco
 	}
 	defer tx.Rollback()
 
+	version, err := lockAndBumpAccountVersion(ctx, tx, account)
+	if err != nil {
+		return err
+	}
+
 	for asset, balance := range account.Balances {
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO account_balances (account_id, asset, available, locked, updated_at)
@@ -81,11 +88,23 @@ func (s *PostgresStore) PersistAccount(ctx context.Context, account *domain.Acco
 		}
 	}
 
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+
+	account.Version = version
+	account.UpdatedAt = time.Now().UTC()
+	return nil
 }
 
 func (s *PostgresStore) PersistOrder(ctx context.Context, order *domain.Order) error {
-	_, err := s.db.ExecContext(ctx, `
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO orders (
 			id, account_id, symbol, side, price, quantity, remaining,
 			reserved_amount, sequence, status, created_at, updated_at
@@ -97,13 +116,38 @@ func (s *PostgresStore) PersistOrder(ctx context.Context, order *domain.Order) e
 		    sequence = EXCLUDED.sequence,
 		    status = EXCLUDED.status,
 		    updated_at = EXCLUDED.updated_at
-	`, order.ID, order.AccountID, order.Symbol, string(order.Side), order.Price, order.Quantity, order.Remaining, order.ReservedAmount, order.Sequence, string(order.Status), order.CreatedAt, order.UpdatedAt)
-	return err
+	`, order.ID, order.AccountID, order.Symbol, string(order.Side), order.Price, order.Quantity, order.Remaining, order.ReservedAmount, order.Sequence, string(order.Status), order.CreatedAt, order.UpdatedAt); err != nil {
+		return err
+	}
+
+	payload, err := toPayload(order)
+	if err != nil {
+		return err
+	}
+	if err := persistOutboxEvents(ctx, tx, []domain.OutboxEvent{{
+		ID:          domain.NewEventID(),
+		Aggregate:   "order",
+		AggregateID: order.ID,
+		Topic:       platform.TopicOrders,
+		Payload:     payload,
+		CreatedAt:   time.Now().UTC(),
+	}}); err != nil {
+		return err
+	}
+
+	return tx.Commit()
 }
 
 func (s *PostgresStore) PersistTrades(ctx context.Context, trades []domain.Trade) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	var outbox []domain.OutboxEvent
 	for _, trade := range trades {
-		if _, err := s.db.ExecContext(ctx, `
+		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO trades (
 				id, symbol, price, quantity, maker_order_id, taker_order_id,
 				maker_account_id, taker_account_id, executed_at
@@ -113,25 +157,71 @@ func (s *PostgresStore) PersistTrades(ctx context.Context, trades []domain.Trade
 		`, trade.ID, trade.Symbol, trade.Price, trade.Quantity, trade.MakerOrderID, trade.TakerOrderID, trade.MakerAccountID, trade.TakerAccountID, trade.ExecutedAt); err != nil {
 			return err
 		}
+		payload, err := toPayload(trade)
+		if err != nil {
+			return err
+		}
+		outbox = append(outbox, domain.OutboxEvent{
+			ID:          domain.NewEventID(),
+			Aggregate:   "trade",
+			AggregateID: trade.ID,
+			Topic:       platform.TopicTrades,
+			Payload:     payload,
+			CreatedAt:   time.Now().UTC(),
+		})
 	}
-	return nil
+	if err := persistOutboxEvents(ctx, tx, outbox); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (s *PostgresStore) PersistAudit(ctx context.Context, events []domain.AuditEvent) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	var outbox []domain.OutboxEvent
 	for _, event := range events {
 		payload, err := json.Marshal(event.Payload)
 		if err != nil {
 			return err
 		}
-		if _, err := s.db.ExecContext(ctx, `
+		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO audit_events (id, event_type, payload, created_at)
 			VALUES ($1, $2, $3, $4)
 			ON CONFLICT (id) DO NOTHING
 		`, event.ID, event.Type, payload, event.CreatedAt); err != nil {
 			return err
 		}
+		outbox = append(outbox, domain.OutboxEvent{
+			ID:          domain.NewEventID(),
+			Aggregate:   "audit",
+			AggregateID: event.ID,
+			Topic:       platform.TopicAudit,
+			Payload:     event.Payload,
+			CreatedAt:   time.Now().UTC(),
+		})
 	}
-	return nil
+	if err := persistOutboxEvents(ctx, tx, outbox); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (s *PostgresStore) PersistOutbox(ctx context.Context, events []domain.OutboxEvent) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	if err := persistOutboxEvents(ctx, tx, events); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (s *PostgresStore) Close() error {
@@ -140,9 +230,10 @@ func (s *PostgresStore) Close() error {
 
 func (s *PostgresStore) loadAccounts(ctx context.Context) ([]*domain.Account, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT account_id, asset, available, locked
-		FROM account_balances
-		ORDER BY account_id, asset
+		SELECT a.id, a.version, a.updated_at, b.asset, b.available, b.locked
+		FROM accounts a
+		JOIN account_balances b ON b.account_id = a.id
+		ORDER BY a.id, b.asset
 	`)
 	if err != nil {
 		return nil, err
@@ -152,13 +243,15 @@ func (s *PostgresStore) loadAccounts(ctx context.Context) ([]*domain.Account, er
 	accounts := map[string]*domain.Account{}
 	for rows.Next() {
 		var accountID, asset string
+		var version int64
+		var updatedAt time.Time
 		var available, locked float64
-		if err := rows.Scan(&accountID, &asset, &available, &locked); err != nil {
+		if err := rows.Scan(&accountID, &version, &updatedAt, &asset, &available, &locked); err != nil {
 			return nil, err
 		}
 		account, ok := accounts[accountID]
 		if !ok {
-			account = &domain.Account{ID: accountID, Balances: map[string]domain.Balance{}}
+			account = &domain.Account{ID: accountID, Version: version, UpdatedAt: updatedAt, Balances: map[string]domain.Balance{}}
 			accounts[accountID] = account
 		}
 		account.Balances[asset] = domain.Balance{Available: available, Locked: locked}
@@ -253,4 +346,67 @@ func (s *PostgresStore) loadAudit(ctx context.Context) ([]domain.AuditEvent, err
 		out = append(out, event)
 	}
 	return out, rows.Err()
+}
+
+func lockAndBumpAccountVersion(ctx context.Context, tx *sql.Tx, account *domain.Account) (int64, error) {
+	var currentVersion int64
+	err := tx.QueryRowContext(ctx, `SELECT version FROM accounts WHERE id = $1 FOR UPDATE`, account.ID).Scan(&currentVersion)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		if account.Version != 0 {
+			return 0, fmt.Errorf("account %s version conflict: expected new account, got version %d", account.ID, account.Version)
+		}
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO accounts (id, version, updated_at)
+			VALUES ($1, $2, NOW())
+		`, account.ID, 1); err != nil {
+			return 0, err
+		}
+		return 1, nil
+	case err != nil:
+		return 0, err
+	}
+
+	if currentVersion != account.Version {
+		return 0, fmt.Errorf("account %s version conflict: expected %d got %d", account.ID, account.Version, currentVersion)
+	}
+
+	nextVersion := currentVersion + 1
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE accounts
+		SET version = $2, updated_at = NOW()
+		WHERE id = $1 AND version = $3
+	`, account.ID, nextVersion, currentVersion); err != nil {
+		return 0, err
+	}
+	return nextVersion, nil
+}
+
+func persistOutboxEvents(ctx context.Context, tx *sql.Tx, events []domain.OutboxEvent) error {
+	for _, event := range events {
+		payload, err := json.Marshal(event.Payload)
+		if err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO outbox_events (id, aggregate_type, aggregate_id, topic, payload, created_at, published_at)
+			VALUES ($1, $2, $3, $4, $5, $6, NULL)
+			ON CONFLICT (id) DO NOTHING
+		`, event.ID, event.Aggregate, event.AggregateID, event.Topic, payload, event.CreatedAt); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func toPayload(v any) (map[string]any, error) {
+	data, err := json.Marshal(v)
+	if err != nil {
+		return nil, err
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(data, &payload); err != nil {
+		return nil, err
+	}
+	return payload, nil
 }

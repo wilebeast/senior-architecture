@@ -1,241 +1,430 @@
 # AtlasX Exchange Core Architecture
 
-## 1. Business Positioning
+## 1. Document Status
 
-This project is designed as a `principal architect portfolio case` for a Web3 digital currency exchange. The focus is not only on writing code, but on demonstrating the architecture thinking expected from the target role:
+This document now distinguishes between:
+
+- `Implemented`: present in the current repository
+- `Partially Implemented`: core seam exists, but production features are incomplete
+- `Planned`: architecture target, not implemented in this repository
+
+Current repository position:
+
+- `Prototype form`: implemented
+- `Stateful local stack`: implemented
+- `Production-grade exchange controls`: mostly planned
+
+## 2. Business Positioning
+
+This project is a `principal architect portfolio case` for a Web3 digital asset exchange. Its purpose is to demonstrate:
 
 - exchange domain decomposition
 - low-latency trading path design
-- wallet and ledger consistency
-- operational resilience
-- cloud-native scaling
-- security by design
-- regulatory readiness
+- wallet and balance consistency
+- persistence and event-driven recovery
+- operational validation through local infrastructure
+- awareness of security, compliance, and cloud production requirements
 
-## 2. Domain Scope
+It is not a full production exchange.
 
-The platform is modeled as a spot exchange with the following bounded contexts:
+## 3. Current Implementation Summary
 
-1. `API Gateway`
-Receives authenticated requests, rate limits them, performs idempotency checks, and routes traffic to internal services.
+### Implemented
 
-2. `Identity / KYC / AML`
-Owns user onboarding, sanctions screening, transaction monitoring, and suspicious activity workflows.
+- spot order entry API
+- price-time-priority in-memory matching engine
+- pre-trade balance reservation
+- deterministic settlement between buyer and seller
+- account balances with `available` and `locked`
+- PostgreSQL persistence for balances, orders, trades, and audit events
+- Redis cache for accounts, order books, and trades
+- Redpanda publishing for order, trade, and audit events
+- restart recovery for open orders and balances
+- audit event recording
+- Docker Compose local stack
+- smoke / restart / inspection / acceptance scripts
 
-3. `Risk Engine`
-Performs pre-trade validation, account state checks, symbol constraints, limits, and policy controls.
+### Partially Implemented
 
-4. `Matching Engine`
-Runs the low-latency price-time-priority order book and generates executions.
+- API gateway behavior
+  The HTTP layer exists, but there is no auth, signing, idempotency, or rate limiting.
+- wallet and ledger
+  Balances, reservations, and settlement exist, but there is no real blockchain integration or treasury workflow.
+- market data
+  Trades and book snapshots exist, but no candles, streams, or downstream fan-out service.
+- recovery model
+  Bootstrap recovery exists, but not snapshotting plus deterministic replay.
+- event-driven architecture
+  Redpanda publish exists, but there are no consumers, outbox, or independently deployed services.
 
-5. `Wallet & Ledger`
-Owns balances, reservations, settlements, deposit/withdraw states, and auditable accounting.
+### Planned
 
-6. `Market Data`
-Builds order book snapshots, trade ticks, candles, and downstream streams.
+- KYC / AML domain
+- withdrawals and chain listeners
+- hot / warm / cold wallet controls
+- HSM / KMS integration
+- fee engine
+- real API gateway controls
+- RBAC / IAM / admin control plane
+- multi-process matching partitions
+- cloud-native production deployment
+- observability and SRE stack
 
-7. `Clearing & Settlement`
-Applies deterministic post-trade asset movements and fee calculations.
+## 4. Domain Scope
 
-8. `Security & Key Management`
-Owns key rotation, signing policies, hot/cold wallet controls, HSM/KMS integration, and break-glass procedures.
+The target platform is modeled as a spot exchange with these bounded contexts.
 
-9. `Audit & Compliance Reporting`
-Stores immutable business events and exposes regulator-friendly trails.
+### 4.1 API Gateway
 
-## 3. Architecture Strategy
+Status: `Partially Implemented`
+
+Current repository:
+
+- HTTP endpoints for deposit, order placement, account lookup, order book lookup, trades, and audit
+
+Not implemented:
+
+- authentication
+- authorization
+- rate limiting
+- idempotency keys
+- signed requests
+
+### 4.2 Identity / KYC / AML
+
+Status: `Planned`
+
+Target responsibility:
+
+- onboarding
+- sanctions screening
+- transaction monitoring
+- suspicious activity workflows
+
+Current repository:
+
+- no implementation
+
+### 4.3 Risk Engine
+
+Status: `Partially Implemented`
+
+Current repository:
+
+- basic price/quantity validation
+- symbol validation
+- available balance checks
+
+Not implemented:
+
+- circuit breakers
+- position or velocity limits
+- jurisdiction policies
+- account risk states
+
+### 4.4 Matching Engine
+
+Status: `Implemented`
+
+Current repository:
+
+- price-time-priority order book
+- deterministic in-memory matching
+- per-symbol order book state
+- trade generation with `executed_at`
+
+Not implemented:
+
+- partitioned engine workers
+- dedicated low-latency process isolation
+- derivatives logic
+
+### 4.5 Wallet & Ledger
+
+Status: `Partially Implemented`
+
+Current repository:
+
+- balances with `available` and `locked`
+- reservation for open orders
+- settlement after execution
+- recovery-time lock rebuild for open orders
+
+Not implemented:
+
+- double-entry ledger service
+- blockchain deposit/withdraw flow
+- treasury operations
+- reconciliation against chain state
+
+### 4.6 Market Data
+
+Status: `Partially Implemented`
+
+Current repository:
+
+- order book snapshots
+- trade history
+- Redis cache for hot reads
+
+Not implemented:
+
+- candle generation
+- WebSocket streaming
+- dedicated market data fan-out service
+
+### 4.7 Clearing & Settlement
+
+Status: `Partially Implemented`
+
+Current repository:
+
+- deterministic spot settlement inside exchange service
+
+Not implemented:
+
+- separate clearing service
+- fees, rebates, commissions
+- reconciliation workflows
+
+### 4.8 Security & Key Management
+
+Status: `Planned`
+
+Current repository:
+
+- only basic local environment configuration
+
+Not implemented:
+
+- secret rotation
+- HSM / KMS
+- signing policy engine
+- wallet key hierarchy
+- MPC / threshold signing
+
+### 4.9 Audit & Compliance Reporting
+
+Status: `Partially Implemented`
+
+Current repository:
+
+- append-style audit event persistence
+- audit event publishing to Redpanda
+- audit query endpoint
+
+Not implemented:
+
+- regulator-oriented reporting
+- case workflows
+- retention and archival policy
+
+## 5. Architecture Strategy
 
 ### Prototype Form
 
-The current repository uses a `modular monolith` in Go because that is the fastest way to demonstrate correctness, interfaces, and critical trading flow inside one repo.
+Status: `Implemented`
+
+The repository uses a `modular monolith` in Go. This is intentional:
+
+- fast to implement
+- easy to validate locally
+- keeps critical trading flow visible in one codebase
 
 ### Production Evolution
 
-In production, the system should separate into these planes:
+Status: `Planned`
 
-- `control plane`: user, KYC, AML, admin, configuration, reporting
+Production separation should evolve toward these planes:
+
+- `control plane`: user, KYC, AML, admin, reporting
 - `trading plane`: order entry, risk, matching, market data
 - `asset plane`: wallet, blockchain connectivity, withdrawals, treasury
 - `governance plane`: audit, observability, policy, secrets, compliance
 
-The matching path stays as small as possible:
+Current repository does not implement this decomposition as separately deployed services.
 
-`gateway -> risk -> funds reservation -> matching -> settlement -> market data fan-out`
+## 6. Request And Event Flow
 
-Everything non-critical is pushed off the latency path.
+### 6.1 Order Submission
 
-## 4. Request And Event Flow
+Status: `Partially Implemented`
 
-### 4.1 Order Submission
+Implemented flow:
 
-1. Client sends signed order to `API Gateway`
-2. Gateway authenticates, validates schema, rate limits, applies idempotency token
-3. Risk engine checks:
-   - account status
-   - symbol status
-   - precision / lot size / tick size
-   - available balance
-   - limits / circuit breaker / velocity checks
-4. Wallet service reserves required funds
-5. Matching engine matches against opposite book using price-time priority
-6. Settlement applies deterministic balance changes
-7. Market data updates snapshots and trade tape
-8. Audit service records business events
+1. Client sends HTTP request
+2. API layer validates request payload
+3. Risk engine validates order and balance sufficiency
+4. Wallet reserves funds
+5. Matching engine matches by price-time priority
+6. Settlement mutates balances
+7. Trades and orders are persisted
+8. Cache and event stream are updated
+9. Audit event is recorded
 
-### 4.2 Deposits And Withdrawals
+Planned but not implemented:
 
-Production design:
+- signed order requests
+- rate limiting
+- idempotency token handling
+- asynchronous consumer services
 
-- deposit watchers subscribe to chain events
-- confirmations are tracked by chain-specific finality rules
-- credit events go through ledger, not direct balance mutation
-- withdrawals pass policy checks, AML scoring, address screening, and approval workflow
-- hot wallet service signs only policy-approved transactions
-- treasury periodically rebalances hot/cold inventory
+### 6.2 Deposits And Withdrawals
 
-## 5. Low-Latency Design Principles
+Status: `Partially Implemented`
 
-The `matching engine` is the most latency-sensitive component.
+Implemented:
 
-Principles:
+- manual deposit API that credits balances
 
-- single writer per symbol partition
-- no remote calls in the core matching loop
-- pre-validated and pre-reserved funds before entering the engine
-- append-only event generation
-- deterministic state transitions
-- lock minimization and memory-local data structures
+Planned:
 
-Scaling model:
+- chain watchers
+- finality tracking
+- withdrawal approval workflow
+- sanctions and address screening
+- hot/cold wallet movement
 
-- shard symbols across engine partitions
-- pin partitions to dedicated CPU resources
-- use replicated read models for market data and reporting
-- isolate retail APIs from internal market-data and admin traffic
+## 7. Low-Latency Design
 
-## 6. Data Model And Consistency
+Status: `Partially Implemented`
 
-The system intentionally separates:
+Implemented design choices:
 
-- `available balance`
-- `locked balance`
-- `ledger events`
-- `order state`
-- `trade executions`
+- in-memory order book
+- pre-reserved funds before entering matching
+- deterministic matching and settlement flow
+- small critical path inside one process
 
-This is critical for preventing asset drift.
+Planned design choices:
 
-Consistency approach:
+- single-writer partition ownership by symbol shard
+- CPU pinning
+- isolated engine processes
+- independent read models and fan-out services
 
-- pre-trade reservation is synchronous
-- match events are deterministic
-- settlement is derived from executions
-- audit events are append-only
+## 8. Data Model And Consistency
 
-Production improvement:
+Status: `Partially Implemented`
 
-- persist order / ledger / trade events to Kafka or Redpanda
-- snapshot engine state periodically
-- support deterministic replay for recovery and audit
+Implemented:
 
-Current repository upgrade:
+- separate `available` vs `locked` balances
+- explicit `order state`
+- explicit `trade executions`
+- persisted `audit events`
+- PostgreSQL as durable state store
+- Redis as hot read cache
+- Redpanda as event publication channel
+- bootstrap recovery for balances and open orders
 
-- `PostgreSQL` persists balances, orders, trades, and audit events
-- `Redis` caches account snapshots, books, and trades
-- `Redpanda` publishes order / trade / audit events
-- service bootstrap restores balances and open orders into runtime memory
+Not yet implemented:
 
-## 7. Security Architecture
+- dedicated ledger event store
+- snapshotting plus replay
+- outbox pattern
+- consumer-driven read model rebuild
 
-### 7.1 Layered Defense
+## 9. Security Architecture
 
-- WAF and API rate limiting
-- zero-trust service-to-service identity
-- mTLS between internal services
-- KMS/HSM-backed key storage
-- strict secret rotation
-- environment isolation between trading and wallet planes
-- immutable audit trail
+Status: `Planned`
 
-### 7.2 Wallet Controls
+The repository does not implement production-grade security controls. The following remain target-state architecture:
 
-- hot wallet for limited operational liquidity
-- cold wallet for treasury reserve
-- warm wallet optional for controlled rebalancing
-- threshold signing / MPC for high-value movement
-- withdrawal allowlist and policy engine
-- transaction simulation and anomaly checks before signing
-
-### 7.3 Application Security
-
-- RBAC for admin functions
+- WAF
+- zero-trust service identity
+- mTLS
+- KMS / HSM integration
 - least-privilege IAM
-- secure SDLC and dependency scanning
-- replay protection for trade APIs
-- request signing and nonce windows
-- tamper-evident audit logging
+- replay-protected trade API signing
+- admin RBAC
+- tamper-evident archival pipeline
 
-## 8. Compliance Readiness
+## 10. Compliance Readiness
 
-The JD explicitly calls out `AML / CFT`, so the architecture includes:
+Status: `Planned`
 
-- KYC onboarding states
-- sanctions / PEP screening integration
-- travel rule integration point
-- transaction monitoring rules engine
-- suspicious activity case management
-- jurisdiction-specific policy configuration
-- asset provenance and address risk scoring hooks
+The architecture anticipates:
 
-The prototype does not implement external compliance vendors, but it exposes the correct domain seams.
+- KYC states
+- AML / CFT hooks
+- sanctions / PEP screening
+- travel rule integration
+- suspicious activity workflows
+- jurisdiction-specific policy
 
-## 9. Cloud And High Availability
+Current repository:
 
-Recommended production deployment on `AWS`:
+- no actual compliance service implementation
 
-- `EKS` for control and API services
-- dedicated low-latency node groups for trading partitions
-- `MSK` or self-managed Kafka / Redpanda for event streaming
-- `Aurora PostgreSQL` for control plane relational data
-- `Redis` for low-latency cache and session controls
-- `S3` for snapshots, archives, and audit export
-- `KMS` / `CloudHSM` for key management
-- `Prometheus + Grafana + Loki + Tempo` for observability
+## 11. Cloud And High Availability
 
-Local developer stack in this repository:
+Status: `Partially Implemented`
 
-- `docker-compose.yml` runs `exchange + postgres + redis + redpanda`
-- schema is applied automatically by the exchange service on startup
-- local persistence enables restart recovery for balances and open orders
+Implemented locally:
 
-HA strategy:
+- `docker-compose.yml` local stack
+- PostgreSQL / Redis / Redpanda integration
+- restart recovery for balances and open orders
+- acceptance scripts for operational validation
 
-- active-active control plane across AZs
-- active-standby or partitioned-active engine deployment by symbol group
-- RPO minimized through event log replication
-- recovery by snapshot + event replay
+Planned production deployment:
 
-## 10. Engineering Standards
+- `EKS`
+- `Aurora PostgreSQL`
+- managed or dedicated Kafka / Redpanda
+- object storage for snapshots and archives
+- observability stack such as Prometheus / Grafana / Loki / Tempo
+- multi-AZ active-active / active-standby topology
 
-This project demonstrates the standards an architect should enforce:
+Not implemented:
 
-- explicit bounded contexts
-- minimal and testable interfaces
-- deterministic business logic
-- immutable domain events for auditability
-- clear separation of latency-critical and non-critical flows
-- operational documentation as a first-class artifact
+- Kubernetes manifests
+- cloud infra as code
+- multi-region failover
+- RPO/RTO automation
 
-## 11. Prototype Limitations
+## 12. Engineering Standards
 
-This repository is intentionally a `portfolio prototype`, not a production exchange. It does not include:
+Status: `Implemented`
+
+This repository demonstrates:
+
+- explicit domain separation in code structure
+- small interfaces for store, cache, and event bus
+- deterministic matching flow
+- operational scripts for validation
+- documentation that maps architecture to implementation
+
+## 13. Prototype Limitations
+
+This repository is still a `portfolio prototype`.
+
+Not implemented:
 
 - real blockchain connectivity
-- persistent storage
+- KYC / AML services
 - authentication / authorization
-- distributed event bus
-- matching partitioning across processes
-- full fee engine
+- fee engine
+- advanced market data products
+- distributed matching partitions
 - derivatives / liquidation logic
+- HSM / MPC wallet controls
+- production cloud deployment stack
 
-Those are the next steps after proving the core architecture and domain design.
+Already implemented despite earlier prototype wording:
+
+- persistent storage through PostgreSQL
+- event publication through Redpanda
+- Redis-backed read cache
+- restart-time recovery of balances and open orders
+
+## 14. Recommended Next Steps
+
+If the goal is to move this prototype closer to a real exchange core, the next useful increments are:
+
+1. add auth, idempotency, and rate limiting at the API layer
+2. introduce outbox + consumer workers for stronger event consistency
+3. add a real ledger event model and fee engine
+4. add withdrawal / wallet control workflows
+5. split matching, wallet, and market data into independently deployable services

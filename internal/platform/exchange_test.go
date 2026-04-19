@@ -170,7 +170,10 @@ func (s *bootstrapStore) PersistAccount(_ context.Context, account *domain.Accou
 func (s *bootstrapStore) PersistOrder(context.Context, *domain.Order) error       { return nil }
 func (s *bootstrapStore) PersistTrades(context.Context, []domain.Trade) error     { return nil }
 func (s *bootstrapStore) PersistAudit(context.Context, []domain.AuditEvent) error { return nil }
-func (s *bootstrapStore) Close() error                                            { return nil }
+func (s *bootstrapStore) PersistOutbox(context.Context, []domain.OutboxEvent) error {
+	return nil
+}
+func (s *bootstrapStore) Close() error { return nil }
 
 type memoryCache struct {
 	accounts  map[string]*domain.Account

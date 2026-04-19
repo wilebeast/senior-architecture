@@ -75,8 +75,19 @@ type Balance struct {
 }
 
 type Account struct {
-	ID       string             `json:"id"`
-	Balances map[string]Balance `json:"balances"`
+	ID        string             `json:"id"`
+	Version   int64              `json:"version"`
+	UpdatedAt time.Time          `json:"updated_at"`
+	Balances  map[string]Balance `json:"balances"`
+}
+
+type OutboxEvent struct {
+	ID          string         `json:"id"`
+	Aggregate   string         `json:"aggregate"`
+	AggregateID string         `json:"aggregate_id"`
+	Topic       string         `json:"topic"`
+	Payload     map[string]any `json:"payload"`
+	CreatedAt   time.Time      `json:"created_at"`
 }
 
 type AuditEvent struct {

@@ -164,6 +164,12 @@ func (s *Service) GetAccount(accountID string) *domain.Account {
 	return cloneAccount(account)
 }
 
+func (s *Service) ReplaceAccount(account *domain.Account) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.accounts[account.ID] = cloneAccount(account)
+}
+
 func (s *Service) RebuildReservations(symbols map[string]domain.Symbol, orders []*domain.Order) []*domain.Account {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -260,8 +266,10 @@ func (s *Service) ensureAccount(accountID string) *domain.Account {
 
 func cloneAccount(account *domain.Account) *domain.Account {
 	cloned := &domain.Account{
-		ID:       account.ID,
-		Balances: make(map[string]domain.Balance, len(account.Balances)),
+		ID:        account.ID,
+		Version:   account.Version,
+		UpdatedAt: account.UpdatedAt,
+		Balances:  make(map[string]domain.Balance, len(account.Balances)),
 	}
 	for asset, balance := range account.Balances {
 		cloned.Balances[asset] = balance

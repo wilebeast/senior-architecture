@@ -25,6 +25,7 @@ type Store interface {
 	PersistOrder(ctx context.Context, order *domain.Order) error
 	PersistTrades(ctx context.Context, trades []domain.Trade) error
 	PersistAudit(ctx context.Context, events []domain.AuditEvent) error
+	PersistOutbox(ctx context.Context, events []domain.OutboxEvent) error
 	Close() error
 }
 

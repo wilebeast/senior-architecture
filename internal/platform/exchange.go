@@ -3,6 +3,7 @@ package platform
 import (
 	"context"
 	"fmt"
+	"log"
 	"sync"
 	"time"
 
@@ -99,18 +100,21 @@ func (e *Exchange) Close() error {
 }
 
 func (e *Exchange) Deposit(ctx context.Context, req domain.DepositRequest) (*domain.Account, error) {
-	account, err := e.wallet.Deposit(req.AccountID, req.Asset, req.Amount)
-	if err != nil {
+	account := e.wallet.GetAccount(req.AccountID)
+	if err := applyDeposit(account, req.Asset, req.Amount); err != nil {
 		return nil, err
 	}
-	if err := e.syncAccount(ctx, account); err != nil {
+
+	if err := e.store.PersistAccount(ctx, account); err != nil {
 		return nil, err
 	}
+	e.wallet.ReplaceAccount(account)
+	e.syncAccountCache(ctx, account)
 
 	event := domain.AuditEvent{
 		ID:        domain.NewEventID(),
 		Type:      "deposit.completed",
-		Payload:   map[string]any{"account_id": req.AccountID, "asset": req.Asset, "amount": req.Amount},
+		Payload:   map[string]any{"account_id": req.AccountID, "asset": req.Asset, "amount": req.Amount, "account_version": account.Version},
 		CreatedAt: time.Now().UTC(),
 	}
 	if err := e.recordAudit(ctx, event); err != nil {
@@ -118,6 +122,19 @@ func (e *Exchange) Deposit(ctx context.Context, req domain.DepositRequest) (*dom
 	}
 
 	return account, nil
+}
+
+func applyDeposit(account *domain.Account, asset string, amount float64) error {
+	if amount <= 0 {
+		return fmt.Errorf("amount must be positive")
+	}
+	if account.Balances == nil {
+		account.Balances = make(map[string]domain.Balance)
+	}
+	balance := account.Balances[asset]
+	balance.Available += amount
+	account.Balances[asset] = balance
+	return nil
 }
 
 func (e *Exchange) PlaceOrder(ctx context.Context, req domain.OrderRequest) (map[string]any, error) {
@@ -385,10 +402,15 @@ func (e *Exchange) syncAccount(ctx context.Context, account *domain.Account) err
 	if err := e.store.PersistAccount(ctx, account); err != nil {
 		return err
 	}
-	if err := e.cache.SetAccount(ctx, account); err != nil {
-		return err
-	}
+	e.wallet.ReplaceAccount(account)
+	e.syncAccountCache(ctx, account)
 	return nil
+}
+
+func (e *Exchange) syncAccountCache(ctx context.Context, account *domain.Account) {
+	if err := e.cache.SetAccount(ctx, account); err != nil {
+		log.Printf("cache set account %s failed: %v", account.ID, err)
+	}
 }
 
 func (e *Exchange) recordAudit(ctx context.Context, event domain.AuditEvent) error {
